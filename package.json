@@ -1,0 +1,25 @@
+{
+  "name": "breath-relay",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "换气接力 · 合唱排练换气规划工具",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "esbuild scripts/test-logic.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/test-logic.cjs --log-level=warning && node node_modules/.cache/test-logic.cjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "esbuild": "^0.21.5",
+    "typescript": "~5.6.2",
+    "vite": "^5.4.11"
+  }
+}
