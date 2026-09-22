@@ -177,6 +177,10 @@ input[type='number'] {
   color: var(--bad);
 }
 
+.warn {
+  color: #fb923c;
+}
+
 .ok {
   color: var(--ok);
 }
@@ -265,14 +269,7 @@ input[type='number'] {
 }
 
 .singer-list li {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
-}
-
-.singer-list input {
-  flex: 1;
+  margin-bottom: 6px;
 }
 
 .breath-count {
@@ -515,6 +512,123 @@ input[type='number'] {
   background: rgba(255, 255, 255, 0.08);
   pointer-events: none;
   z-index: 3;
+}
+
+/* ---------- 持续发声疲劳警示层 ---------- */
+.fatigue-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(251, 146, 60, 0.12);
+  border-left: 1px solid rgba(251, 146, 60, 0.55);
+  border-right: 1px solid rgba(251, 146, 60, 0.55);
+  pointer-events: none;
+}
+
+.fatigue-seg {
+  position: absolute;
+  top: 1px;
+  height: 6px;
+  background: repeating-linear-gradient(45deg, #fb923c, #fb923c 5px, #c2410c 5px, #c2410c 10px);
+  border-radius: 3px;
+  box-shadow: 0 0 6px rgba(251, 146, 60, 0.8);
+  z-index: 2;
+}
+
+.fatigue-flag {
+  font-style: normal;
+  font-size: 11px;
+  color: #fb923c;
+  white-space: nowrap;
+  flex: none;
+}
+
+/* ---------- 侧栏：疲劳设置与汇总 ---------- */
+.singer-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.singer-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.singer-line input {
+  flex: 1;
+}
+
+.fatigue-edit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.fatigue-edit label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.fatigue-edit input {
+  width: 48px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+
+.fatigue-section {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.fatigue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.fatigue-jump {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.12);
+  border-radius: 0;
+  padding: 4px 2px;
+  font-size: 12px;
+}
+
+.fatigue-jump:hover {
+  background: rgba(251, 146, 60, 0.08);
+}
+
+.fatigue-time {
+  flex: none;
+  min-width: 40px;
+  color: #fb923c;
+  font-weight: 600;
+}
+
+.fatigue-name {
+  flex: none;
+  font-weight: 600;
+}
+
+.fatigue-jump .muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------- 寻优面板 ---------- */

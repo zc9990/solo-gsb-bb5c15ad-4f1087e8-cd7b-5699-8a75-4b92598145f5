@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Project, Selection } from '../types';
 import { totalSeconds, type Segment, type UnderSegment } from '../lib/coverage';
+import type { FatigueSegment } from '../lib/fatigue';
 import { placeNewInterval, placeNewIntervalOnBeat } from '../lib/constraints';
 import { beatTicks, fmtTimeAsBeat, snapTimeToBeat, timeToLocation } from '../lib/tempo';
 import { fmtSec, fmtTick } from '../lib/format';
@@ -26,11 +27,15 @@ interface Props {
   project: Project;
   /** 各声部未达标时段（预览时基于预览工程计算） */
   coverage: Map<string, UnderSegment[]>;
+  /** 各歌手持续发声疲劳警示时段（预览时基于预览工程实时重算） */
+  fatigue: Map<string, FatigueSegment[]>;
   selection: Selection | null;
   ghost: Ghost | null;
   /** 声部接力排程的整组幽灵块预览（null = 未在预览） */
   relayPreview: RelayPreview | null;
   pxPerSec: number;
+  /** 时间轴滚动容器 ref（供侧栏疲劳汇总跳转定位） */
+  scrollRef: React.RefObject<HTMLDivElement>;
   onSelect: (sel: Selection | null) => void;
   onUpdateInterval: (singerId: string, intervalId: string, start: number, end: number) => void;
   onAddInterval: (singerId: string, seg: Segment) => void;
@@ -104,7 +109,7 @@ export default function Timeline(props: Props) {
   };
 
   return (
-    <div className="timeline" onClick={() => props.onSelect(null)}>
+    <div className="timeline" ref={props.scrollRef} onClick={() => props.onSelect(null)}>
       <div className="trow ruler-row">
         <div className="trow-label ruler-controls" onClick={(e) => e.stopPropagation()}>
           <div className="seg-toggle">
@@ -217,9 +222,27 @@ export default function Timeline(props: Props) {
               const relayGhosts = props.relayPreview
                 ? props.relayPreview.ghosts.filter((g) => g.singerId === singer.id)
                 : [];
+              const fatigueSegs = props.fatigue.get(singer.id) ?? [];
+              const fatigueTitle = (seg: FatigueSegment) =>
+                (beatMode
+                  ? `拍位 ${fmtTimeAsBeat(seg.start, beatMap)} – ${fmtTimeAsBeat(seg.end, beatMap)}\n`
+                  : '') +
+                `持续发声超限 ${fmtSec(seg.start)} – ${fmtSec(seg.end)}\n` +
+                `峰值连续发声 ${fmtSec(seg.peakSeconds)}（上限 ${fmtSec(singer.fatigue.maxSingSeconds)}）\n` +
+                `下一次有效恢复（换气 ≥${fmtSec(singer.fatigue.recoveryBreathSeconds)}）开始时解除`;
               return (
-                <div className="trow singer-row" key={singer.id}>
-                  <div className="trow-label">{singer.name}</div>
+                <div className="trow singer-row" key={singer.id} data-singer-row={singer.id}>
+                  <div className="trow-label">
+                    {singer.name}
+                    {fatigueSegs.length > 0 && (
+                      <em
+                        className="fatigue-flag"
+                        title={`${singer.name} 有 ${fatigueSegs.length} 段持续发声超限警示`}
+                      >
+                        ⚠{fatigueSegs.length}
+                      </em>
+                    )}
+                  </div>
                   <div
                     className="track singer-track"
                     style={gridStyle}
@@ -242,6 +265,13 @@ export default function Timeline(props: Props) {
                         }}
                       />
                     )}
+                    {fatigueSegs.map((seg) => (
+                      <div
+                        key={`fat-band-${seg.start}-${seg.end}`}
+                        className="fatigue-band"
+                        style={{ left: seg.start * pxPerSec, width: Math.max(2, (seg.end - seg.start) * pxPerSec) }}
+                      />
+                    ))}
                   {singer.breaths.map((b) => (
                     <BreathBlock
                       key={b.id}
@@ -261,6 +291,14 @@ export default function Timeline(props: Props) {
                       }
                       onSelect={() => props.onSelect({ singerId: singer.id, intervalId: b.id })}
                       onChange={(s, en) => props.onUpdateInterval(singer.id, b.id, s, en)}
+                    />
+                  ))}
+                  {fatigueSegs.map((seg) => (
+                    <div
+                      key={`fat-${seg.start}-${seg.end}`}
+                      className="fatigue-seg"
+                      style={{ left: seg.start * pxPerSec, width: Math.max(2, (seg.end - seg.start) * pxPerSec) }}
+                      title={fatigueTitle(seg)}
                     />
                   ))}
                   {props.ghost && props.ghost.singerId === singer.id && (

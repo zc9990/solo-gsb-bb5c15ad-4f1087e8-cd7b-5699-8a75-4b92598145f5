@@ -1,6 +1,16 @@
 import { underCoveredSegments, totalSeconds, mergeSegments } from '../src/lib/coverage';
-import { findBestMove } from '../src/lib/optimize';
+import { applyMove, findBestMove } from '../src/lib/optimize';
 import { createSampleProject } from '../src/lib/sample';
+import { loadProject, sanitizeProject, saveProject } from '../src/lib/storage';
+import {
+  DISABLED_FATIGUE,
+  fatigueEnabled,
+  fatigueSummary,
+  projectFatigue,
+  sanitizeFatigue,
+  singerFatigue,
+  singerFatigueSegments,
+} from '../src/lib/fatigue';
 import {
   beatTicks,
   beatToTime,
@@ -260,6 +270,7 @@ function relayProject(
       name: `歌手${i + 1}`,
       partId: 'p1',
       breaths: bs.map(([start, end]) => ({ id: uid(), start, end })),
+      fatigue: { ...DISABLED_FATIGUE },
     })),
   };
 }
@@ -550,7 +561,15 @@ function updateBreath(p: Project, singerId: string, intervalId: string, start: n
 
   const replaced: Project = {
     ...p,
-    singers: [{ id: 'other-id', name: '另一个人', partId: 'p1', breaths: [{ id: 'b2', start: 1, end: 2 }] }],
+    singers: [
+      {
+        id: 'other-id',
+        name: '另一个人',
+        partId: 'p1',
+        breaths: [{ id: 'b2', start: 1, end: 2 }],
+        fatigue: { ...DISABLED_FATIGUE },
+      },
+    ],
   };
   const d2 = diffProjectSnapshot(replaced, snap);
   check(
@@ -596,7 +615,9 @@ function updateBreath(p: Project, singerId: string, intervalId: string, start: n
     name: '排练中的新曲名',
     duration: 40,
     beatMap: normalizeBeatMap({ startBpm: 60 }),
-    singers: [{ id: 'newcomer', name: '新人', partId: 'p1', breaths: [{ id: 'x', start: 30, end: 32 }] }],
+    singers: [
+      { id: 'newcomer', name: '新人', partId: 'p1', breaths: [{ id: 'x', start: 30, end: 32 }], fatigue: { ...DISABLED_FATIGUE } },
+    ],
   };
   const restored = restoreProjectSnapshot(edited, snap);
   check('restore keeps current name', restored.name, '排练中的新曲名');
@@ -676,6 +697,246 @@ check('snapshot default name prefix', defaultSnapshotName(new Date('2026-09-21T1
   // 损坏的存储数据不致命
   store.set('breath-relay:snapshots:v1', '{not json');
   check('snapshots corrupt storage safe', loadSnapshots(), []);
+}
+
+// ---------- 持续发声疲劳：扫描、恢复阈值、半开边界、清洗与持久化 ----------
+
+const fat = (maxSingSeconds: number, recoveryBreathSeconds: number) => ({ maxSingSeconds, recoveryBreathSeconds });
+const segTuple = (segs: { start: number; end: number; peakSeconds: number }[]) =>
+  segs.map((s) => [s.start, s.end, s.peakSeconds]);
+
+// 37. 停用：任一项为 0 → 全曲无警示
+check('fatigue disabled zero max', singerFatigueSegments([], 0, 3, 30), []);
+check('fatigue disabled zero recovery', singerFatigueSegments([], 10, 0, 30), []);
+
+// 38. 无换气：从精确越界时刻标记到曲终，峰值为全曲连续发声
+check('fatigue no breath', segTuple(singerFatigueSegments([], 10, 3, 25)), [[10, 25, 25]]);
+
+// 39. 恰好唱到上限不报警（超过才算越界）
+check('fatigue exact limit no warn', singerFatigueSegments([], 10, 3, 10), []);
+
+// 40. 有效恢复清零：警示在恢复换气的起点结束，恢复后重新累计
+{
+  // 上限 6、恢复阈值 2：[8,10) 有效 → 警示 [6,8)；之后 10→16 累计恰为 6，不再超限
+  check(
+    'fatigue recovery resets',
+    segTuple(singerFatigueSegments([{ start: 8, end: 10 }], 6, 2, 16)),
+    [[6, 8, 8]],
+  );
+}
+
+// 41. 较短换气只暂停不清零：警示跨过短换气持续标记到曲终
+{
+  // 上限 5、恢复阈值 3：[6,7) 仅 1s → 越界时刻 5，警示 [5,10)，峰值 6+3=9
+  check(
+    'fatigue short breath only pauses',
+    segTuple(singerFatigueSegments([{ start: 6, end: 7 }], 5, 3, 10)),
+    [[5, 10, 9]],
+  );
+}
+
+// 42. 恢复阈值边界：恰好达到阈值的换气清零，差一点都不行
+{
+  // 阈值 3：[4,7) 恰好 3s → 清零，之后 7→20 在 17 越界
+  check(
+    'fatigue exact recovery resets',
+    singerFatigueSegments([{ start: 4, end: 7 }], 10, 3, 20).map((s) => [s.start, s.end]),
+    [[17, 20]],
+  );
+  // [4,6.5) 仅 2.5s → 只暂停：越界时刻 6.5 + (10-4) = 12.5
+  check(
+    'fatigue short of threshold pauses',
+    singerFatigueSegments([{ start: 4, end: 6.5 }], 10, 3, 20).map((s) => [s.start, s.end]),
+    [[12.5, 20]],
+  );
+}
+
+// 43. 半开边界：换气起点恰好是累计达到上限的时刻 → 先恢复清零，不产生警示
+check(
+  'fatigue boundary at breath start',
+  singerFatigueSegments([{ start: 5, end: 8 }], 5, 3, 12),
+  [],
+);
+
+// 44. 多次超限：每次有效恢复后重新累计，可产生多段警示
+{
+  // 上限 4、恢复阈值 2：[5,7) 与 [12,14) 均有效；14→18 累计恰为 4 不再超限
+  check(
+    'fatigue multiple warnings',
+    segTuple(singerFatigueSegments([{ start: 5, end: 7 }, { start: 12, end: 14 }], 4, 2, 18)),
+    [
+      [4, 5, 5],
+      [11, 12, 5],
+    ],
+  );
+}
+
+// 45. 非整数上限：越界时刻精确到小数
+check(
+  'fatigue fractional limit',
+  segTuple(singerFatigueSegments([{ start: 10, end: 12 }], 4.5, 2, 20)),
+  [
+    [4.5, 10, 10],
+    [16.5, 20, 8],
+  ],
+);
+
+// 46. 防御：换气越出全曲被裁剪；重叠换气不使扫描崩溃
+check(
+  'fatigue clamps to duration',
+  singerFatigueSegments([{ start: 8, end: 20 }], 5, 2, 10).map((s) => [s.start, s.end]),
+  [[5, 8]],
+);
+check(
+  'fatigue tolerates overlapping breaths',
+  singerFatigueSegments([{ start: 2, end: 6 }, { start: 4, end: 5 }], 3, 1, 10).map((s) => [s.start, s.end]),
+  [[9, 10]],
+);
+
+// 47. 歌手级 API：启用判定与按歌手计算
+{
+  const p = relayProject([[]], { minSingers: 1 });
+  const s = { ...p.singers[0], fatigue: fat(5, 2) };
+  check('fatigue enabled flag', fatigueEnabled(s), true);
+  check('fatigue disabled flag', fatigueEnabled(p.singers[0]), false);
+  check('fatigue partial zero disabled', fatigueEnabled({ ...s, fatigue: fat(5, 0) }), false);
+  check('singerFatigue via singer', singerFatigue(s, 12).map((x) => [x.start, x.end]), [[5, 12]]);
+}
+
+// 48. 示例工程：李雪（≤25s/≥3s）与陈静（≤30s/≥4s，3s 换气只暂停）的警示时段
+{
+  const p = createSampleProject();
+  const f = projectFatigue(p);
+  const li = p.singers.find((s) => s.name === '李雪')!;
+  const chen = p.singers.find((s) => s.name === '陈静')!;
+  check('sample fatigue li', f.get(li.id)!.map((s) => [s.start, s.end]), [
+    [47, 50],
+    [78, 96],
+  ]);
+  // 陈静首段换气 [30,33) 仅 3s < 4s 阈值 → 累计 30 不清零，33s 立即越界
+  check('sample fatigue chen', f.get(chen.id)!.map((s) => [s.start, s.end]), [
+    [33, 60],
+    [94, 96],
+  ]);
+  check(
+    'sample fatigue others disabled',
+    p.singers.filter((s) => !['李雪', '陈静'].includes(s.name)).every((s) => (f.get(s.id) ?? []).length === 0),
+    true,
+  );
+}
+
+// 49. 侧栏汇总：跨歌手按开始时间升序，并带声部信息
+{
+  const p = createSampleProject();
+  const sum = fatigueSummary(p, projectFatigue(p));
+  check(
+    'fatigue summary sorted by start',
+    sum.map((e) => [e.singerName, e.start]),
+    [
+      ['陈静', 33],
+      ['李雪', 47],
+      ['李雪', 78],
+      ['陈静', 94],
+    ],
+  );
+  check('fatigue summary part info', [sum[0].partName, sum[0].partId], ['女低音', p.parts[1].id]);
+}
+
+// 50. 工程清洗：旧工程补 0/0；负数 / 非有限值不进入状态；合法设置随导出保留
+{
+  const p = relayProject([[[1, 2]]], { minSingers: 1 });
+  const raw = JSON.parse(JSON.stringify(p)) as Record<string, unknown>;
+  delete (raw.singers as Record<string, unknown>[])[0].fatigue;
+  check('fatigue default on old project', sanitizeProject(raw)?.singers[0].fatigue, {
+    maxSingSeconds: 0,
+    recoveryBreathSeconds: 0,
+  });
+
+  const bad = JSON.parse(JSON.stringify(relayProject([[], [], []], { minSingers: 1 }))) as {
+    singers: { fatigue: unknown }[];
+  };
+  bad.singers[0].fatigue = { maxSingSeconds: -5, recoveryBreathSeconds: 2 };
+  bad.singers[1].fatigue = { maxSingSeconds: 'abc', recoveryBreathSeconds: null };
+  bad.singers[2].fatigue = 42;
+  const clean = sanitizeProject(bad)!;
+  check('fatigue negative rejected', clean.singers[0].fatigue, { maxSingSeconds: 0, recoveryBreathSeconds: 2 });
+  check('fatigue non-number rejected', clean.singers[1].fatigue, { maxSingSeconds: 0, recoveryBreathSeconds: 0 });
+  check('fatigue non-object rejected', clean.singers[2].fatigue, { maxSingSeconds: 0, recoveryBreathSeconds: 0 });
+  check('fatigue NaN/Infinity rejected', sanitizeFatigue({ maxSingSeconds: NaN, recoveryBreathSeconds: Infinity }), {
+    maxSingSeconds: 0,
+    recoveryBreathSeconds: 0,
+  });
+
+  const round = sanitizeProject(JSON.parse(JSON.stringify(createSampleProject())))!;
+  check('fatigue preserved through export/import', round.singers.find((s) => s.name === '李雪')!.fatigue, {
+    maxSingSeconds: 25,
+    recoveryBreathSeconds: 3,
+  });
+}
+
+// 51. 快照：疲劳设置随歌手冻结 / 恢复；旧快照缺字段补 0/0
+{
+  const p = relayProject([[[1, 2]]], { minSingers: 1 });
+  const withFat: Project = { ...p, singers: p.singers.map((s) => ({ ...s, fatigue: fat(6, 2) })) };
+  const snap = createSnapshot(withFat);
+  check('snapshot freezes fatigue', snap.singers[0].fatigue, { maxSingSeconds: 6, recoveryBreathSeconds: 2 });
+  const restored = restoreProjectSnapshot(p, snap);
+  check('restore brings fatigue back', restored.singers[0].fatigue, { maxSingSeconds: 6, recoveryBreathSeconds: 2 });
+  const raw = JSON.parse(JSON.stringify(snap)) as { singers: { fatigue?: unknown }[] };
+  delete raw.singers[0].fatigue;
+  check('old snapshot fatigue default', sanitizeSnapshot(raw)?.singers[0].fatigue, {
+    maxSingSeconds: 0,
+    recoveryBreathSeconds: 0,
+  });
+}
+
+// 52. 本地保存：疲劳设置随工程写入 localStorage 并原样读回
+{
+  const store = new Map<string, string>();
+  (globalThis as Record<string, unknown>).localStorage = {
+    getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+  };
+  saveProject(createSampleProject());
+  const loaded = loadProject()!;
+  check('project persists fatigue', loaded.singers.find((s) => s.name === '陈静')!.fatigue, {
+    maxSingSeconds: 30,
+    recoveryBreathSeconds: 4,
+  });
+}
+
+// 53. 预览工程实时重算：寻优位移 / 接力整组写入后的警示随预览工程变化
+{
+  const p = createSampleProject();
+  const li = p.singers.find((s) => s.name === '李雪')!;
+  const iv = li.breaths[1]; // [50,53)
+  const before = projectFatigue(p).get(li.id)!.map((s) => [s.start, s.end]);
+  // 预览把 [50,53) 后移 5s → [55,58)：第一段警示延长到 55，第二段起点推迟到 83
+  const after = projectFatigue(applyMove(p, li.id, iv.id, 5)).get(li.id)!.map((s) => [s.start, s.end]);
+  check('fatigue follows optimize preview', [before, after], [
+    [
+      [47, 50],
+      [78, 96],
+    ],
+    [
+      [47, 55],
+      [83, 96],
+    ],
+  ]);
+}
+{
+  const base = relayProject([[], []], { minSingers: 1, bpm: 120 });
+  const withFat: Project = { ...base, singers: base.singers.map((s) => ({ ...s, fatigue: fat(2, 1) })) };
+  const r = planRelay(withFat, { partId: 'p1', startBeat: 0, endBeat: 8, breathBeats: 2 });
+  check('relay plan for fatigue preview', r.ok, true);
+  if (r.ok) {
+    const before = projectFatigue(withFat);
+    const preview = projectFatigue(applyRelay(withFat, r));
+    // 无换气时两人都从 2s 起报警；接力写入 [0,1) / [1,2)（均 ≥1s 有效恢复）后起点顺延
+    check('fatigue before relay preview', [before.get('s0')![0].start, before.get('s1')![0].start], [2, 2]);
+    check('fatigue recomputed on relay preview', [preview.get('s0')![0].start, preview.get('s1')![0].start], [3, 4]);
+  }
 }
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);

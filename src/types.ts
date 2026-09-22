@@ -7,11 +7,25 @@ export interface BreathInterval {
   end: number;
 }
 
+/**
+ * 持续发声疲劳设置：两项均 > 0 时启用检查；任一为 0 表示停用。
+ * 扫描全曲时，仅时长达到 recoveryBreathSeconds 的换气会清零累计连续发声，
+ * 较短换气只暂停累计；累计超过 maxSingSeconds 即从精确越界时刻起标记警示。
+ */
+export interface FatigueSettings {
+  /** 最长连续发声秒数（0 = 停用） */
+  maxSingSeconds: number;
+  /** 有效恢复换气秒数（0 = 停用） */
+  recoveryBreathSeconds: number;
+}
+
 export interface Singer {
   id: string;
   name: string;
   partId: string;
   breaths: BreathInterval[];
+  /** 持续发声疲劳设置（旧工程缺省时补 0/0，即停用） */
+  fatigue: FatigueSettings;
 }
 
 export interface VoicePart {

@@ -10,6 +10,7 @@ import {
 } from './lib/snapshot';
 import { normalizeBeatMap } from './lib/tempo';
 import { partUnder, totalSeconds, type Segment } from './lib/coverage';
+import { projectFatigue } from './lib/fatigue';
 import { applyMove, findBestMove, type OptimizeResult } from './lib/optimize';
 import { applyRelay, planRelay, type RelayRequest, type RelayResult, type RelaySuccess } from './lib/relay';
 import { MIN_DURATION, clamp } from './lib/constraints';
@@ -30,6 +31,7 @@ export default function App() {
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [snapshots, setSnapshots] = useState<RehearsalSnapshot[]>(() => loadSnapshots());
   const fileRef = useRef<HTMLInputElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
 
   // 本地自动保存（刷新后自动恢复）
   useEffect(() => {
@@ -108,6 +110,34 @@ export default function App() {
     [coverage],
   );
   const underCount = useMemo(() => [...coverage.values()].reduce((acc, segs) => acc + segs.length, 0), [coverage]);
+
+  /**
+   * 持续发声疲劳警示：与覆盖计算一样基于 effectiveProject，
+   * 因此拖拽、缩放、寻优 / 接力预览期间实时重算，取消预览即还原。
+   */
+  const fatigue = useMemo(() => projectFatigue(effectiveProject), [effectiveProject]);
+  const fatigueCount = useMemo(
+    () => [...fatigue.values()].reduce((acc, segs) => acc + segs.length, 0),
+    [fatigue],
+  );
+
+  /** 侧栏疲劳汇总跳转：把时间轴滚动到对应歌手的对应时刻。 */
+  const jumpToTime = useCallback(
+    (singerId: string, t: number) => {
+      const tl = timelineRef.current;
+      if (!tl) return;
+      const row = tl.querySelector(`[data-singer-row="${CSS.escape(singerId)}"]`);
+      if (row) {
+        const tlRect = tl.getBoundingClientRect();
+        const rowRect = row.getBoundingClientRect();
+        if (rowRect.top < tlRect.top || rowRect.bottom > tlRect.bottom) {
+          tl.scrollTop += rowRect.top - tlRect.top - 34;
+        }
+      }
+      tl.scrollTo({ left: Math.max(0, t * pxPerSec - 100), behavior: 'smooth' });
+    },
+    [pxPerSec],
+  );
 
   const ghost: Ghost | null = useMemo(() => {
     if (relay || !previewing || !result) return null;
@@ -294,12 +324,14 @@ export default function App() {
         <Sidebar
           project={project}
           coverage={coverage}
+          fatigue={fatigue}
           mutate={mutate}
           mutateBeatMap={mutateBeatMap}
           snapshots={snapshots}
           onCreateSnapshot={handleCreateSnapshot}
           onRestoreSnapshot={handleRestoreSnapshot}
           onDeleteSnapshot={handleDeleteSnapshot}
+          onJumpToTime={jumpToTime}
         />
 
         <main className="main">
@@ -311,6 +343,10 @@ export default function App() {
                 （{underCount} 处{previewing ? ' · 寻优预览中' : ''}
                 {relay ? ' · 接力预览中' : ''}）
               </span>
+            </div>
+            <div className="stat">
+              疲劳警示：
+              <b className={fatigueCount > 0 ? 'warn' : 'ok'}>{fatigueCount} 处</b>
             </div>
             <div className="zoom">
               <span className="muted">缩放</span>
@@ -344,10 +380,12 @@ export default function App() {
           <Timeline
             project={project}
             coverage={coverage}
+            fatigue={fatigue}
             selection={selection}
             ghost={ghost}
             relayPreview={relayPreview}
             pxPerSec={pxPerSec}
+            scrollRef={timelineRef}
             onSelect={(sel) => {
               clearOptimization();
               clearRelay();

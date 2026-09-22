@@ -1,5 +1,6 @@
-import type { Project } from '../types';
+import type { FatigueSettings, Project } from '../types';
 import { uid } from './id';
+import { DISABLED_FATIGUE } from './fatigue';
 
 /**
  * 示例工程：96 秒四部合唱。
@@ -7,6 +8,8 @@ import { uid } from './id';
  * 换气段故意安排了若干重叠，用于演示未达标标红与自动寻优。
  * 节拍图 4/4、起始 120 BPM；第 17 小节首拍变速到 90 BPM、第 33 小节回到 120，
  * 用于演示跨变速点的双向换算与按拍吸附（换气段的秒位置不随之改变）。
+ * 李雪（连续 ≤25s / 恢复 ≥3s）与陈静（连续 ≤30s / 恢复 ≥4s，其 3s 换气只暂停不清零）
+ * 启用了持续发声疲劳检查，用于演示歌手轨道上的疲劳警示层；其余歌手 0/0 停用。
  */
 export function createSampleProject(): Project {
   const parts = [
@@ -15,11 +18,12 @@ export function createSampleProject(): Project {
     { id: uid(), name: '男高音', color: '#60a5fa', minSingers: 1 },
     { id: uid(), name: '男低音', color: '#34d399', minSingers: 1 },
   ];
-  const mk = (name: string, partIdx: number, breaths: [number, number][]) => ({
+  const mk = (name: string, partIdx: number, breaths: [number, number][], fatigue: FatigueSettings = DISABLED_FATIGUE) => ({
     id: uid(),
     name,
     partId: parts[partIdx].id,
     breaths: breaths.map(([start, end]) => ({ id: uid(), start, end })),
+    fatigue: { ...fatigue },
   });
   return {
     name: '示例 · 四部合唱《远方的风》',
@@ -36,9 +40,9 @@ export function createSampleProject(): Project {
     parts,
     singers: [
       mk('王芳', 0, [[18, 21], [44, 47], [70, 73]]),
-      mk('李雪', 0, [[19, 22], [50, 53]]),
+      mk('李雪', 0, [[19, 22], [50, 53]], { maxSingSeconds: 25, recoveryBreathSeconds: 3 }),
       mk('赵敏', 0, [[44, 46], [76, 79]]),
-      mk('陈静', 1, [[30, 33], [60, 64]]),
+      mk('陈静', 1, [[30, 33], [60, 64]], { maxSingSeconds: 30, recoveryBreathSeconds: 4 }),
       mk('刘洋', 1, [[31, 34]]),
       mk('孙丽', 1, [[60, 63]]),
       mk('周杰', 2, [[40, 43]]),
