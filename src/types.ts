@@ -11,6 +11,16 @@ export interface Singer {
   id: string;
   name: string;
   partId: string;
+  /**
+   * 最长连续发声秒数：累计连续发声达到该值后即进入疲劳（0 = 停用疲劳检查）。
+   * 只有时长 ≥ recoveryBreathSec 的换气才会清零累计；较短换气只暂停累计。
+   */
+  maxSustainSec: number;
+  /**
+   * 有效恢复换气秒数：换气时长达到该值才算有效恢复、清零累计（0 = 任意换气都清零）。
+   * maxSustainSec 为 0 时本项无意义。
+   */
+  recoveryBreathSec: number;
   breaths: BreathInterval[];
 }
 

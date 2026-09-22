@@ -15,6 +15,14 @@ import {
 import { placeNewIntervalOnBeat } from '../src/lib/constraints';
 import { applyRelay, planRelay } from '../src/lib/relay';
 import {
+  fatigueAlerts,
+  fatigueDomId,
+  normalizeSingerLimits,
+  projectFatigue,
+  singerFatigue,
+} from '../src/lib/fatigue';
+import { sanitizeProject } from '../src/lib/storage';
+import {
   createSnapshot,
   defaultSnapshotName,
   diffProjectSnapshot,
@@ -243,7 +251,14 @@ check('default beatmap', normalizeBeatMap(undefined), {
 /** 构造恒速（或给定节拍图）测试工程：每位歌手的已有换气以 [start,end) 秒给出。 */
 function relayProject(
   breaths: [number, number][][],
-  opts: { minSingers?: number; duration?: number; bpm?: number; changes?: { measure: number; bpm: number }[] } = {},
+  opts: {
+    minSingers?: number;
+    duration?: number;
+    bpm?: number;
+    changes?: { measure: number; bpm: number }[];
+    /** 每位歌手的 [最长连续发声, 有效恢复换气]（默认 [0,0] 停用疲劳检查） */
+    limits?: [number, number][];
+  } = {},
 ): Project {
   const bpm = opts.bpm ?? 120;
   const bm = normalizeBeatMap(
@@ -255,12 +270,17 @@ function relayProject(
     duration: opts.duration ?? 60,
     beatMap: bm,
     parts: [part],
-    singers: breaths.map((bs, i) => ({
-      id: `s${i}`,
-      name: `歌手${i + 1}`,
-      partId: 'p1',
-      breaths: bs.map(([start, end]) => ({ id: uid(), start, end })),
-    })),
+    singers: breaths.map((bs, i) => {
+      const [maxSustainSec, recoveryBreathSec] = opts.limits?.[i] ?? [0, 0];
+      return {
+        id: `s${i}`,
+        name: `歌手${i + 1}`,
+        partId: 'p1',
+        maxSustainSec,
+        recoveryBreathSec,
+        breaths: bs.map(([start, end]) => ({ id: uid(), start, end })),
+      };
+    }),
   };
 }
 
@@ -676,6 +696,192 @@ check('snapshot default name prefix', defaultSnapshotName(new Date('2026-09-21T1
   // 损坏的存储数据不致命
   store.set('breath-relay:snapshots:v1', '{not json');
   check('snapshots corrupt storage safe', loadSnapshots(), []);
+}
+
+// ---------- 持续发声疲劳：累计 / 短换气暂停 / 有效恢复清零 / 半开边界 ----------
+
+/** 疲劳区间 → [start,end,peak]，便于比较。 */
+const fatRanges = (
+  breaths: [number, number][],
+  maxSustain: number,
+  recovery: number,
+  duration = 60,
+) => singerFatigue(breaths.map(([start, end]) => ({ start, end })), maxSustain, recovery, duration).map((s) => [
+  Math.round(s.start * 1000) / 1000,
+  Math.round(s.end * 1000) / 1000,
+  Math.round(s.peakSinging * 1000) / 1000,
+]);
+
+// 37. 停用检查：maxSustain = 0（或负数）一律不产生警示
+check('fatigue disabled at 0', singerFatigue([{ start: 0, end: 1 }], 0, 2, 60), []);
+check('fatigue disabled negative', singerFatigue([], -5, 2, 60), []);
+
+// 38. 基本越界：无换气唱满 60s，上限 20s → [20,60)，峰值 60
+check('fatigue no breaths', fatRanges([], 20, 2), [[20, 60, 60]]);
+
+// 39. 精确越界时刻：[30,34) 有效恢复，上限 20s → [20,30)；恢复后 34→60 仅 26s → [54,60)
+check('fatigue effective recovery splits', fatRanges([[30, 34]], 20, 2), [[20, 30, 30], [54, 60, 26]]);
+
+// 40. 恰好达到上限不算越界（半开区间）：唱 20s 后换气 [20,22) 有效 → 无警示
+check('fatigue exact limit is ok', fatRanges([[20, 22]], 20, 2, 40), []);
+
+// 41. 短换气只暂停、不清零：上限 20、恢复需 5；[10,12) 2s 短换气
+//   发声 0→10（10s），暂停，12→40 再唱 28s，累计 38 → t=22 越界；[40,46) 6s 才有效恢复 → [22,40)，峰值 38
+check('fatigue short breath only pauses', fatRanges([[10, 12], [40, 46]], 20, 5), [[22, 40, 38]]);
+
+// 42. 恢复阈值边界：换气时长恰好等于阈值 → 有效恢复（含等号）；短 0.1s → 短换气
+{
+  // [0,10) 10s；[10,15) 恰好 5s 有效清零；15→40 唱 25s → [35,40)；[40,45) 有效；45→60 15s
+  check('fatigue recovery threshold inclusive', fatRanges([[10, 15], [40, 45]], 20, 5), [[35, 40, 25]]);
+}
+check(
+  'fatigue just-short breath not recovery',
+  fatRanges([[10, 14.9], [40, 46]], 20, 5),
+  // 0→10 唱10；短换气暂停；14.9→40 唱25.1，累计35.1 → 越界 t = 40-(35.1-20)=24.9；[40,46) 有效 → [24.9,40)
+  [[24.9, 40, 35.1]],
+);
+
+// 43. 短换气期间也处于疲劳：t=22 起疲劳，短换气 [25,27) 不清零，警示段连续到有效恢复 [40,46)
+//   累计发声：0→10 唱10，12→25 唱13（累23越界），27→40 唱13（累36）→ 峰值 36
+check('fatigue spans short breaths', fatRanges([[10, 12], [25, 27], [40, 46]], 20, 5), [[22, 40, 36]]);
+
+// 44. 恢复阈值为 0：任意换气（含 0.5s 最短块）都有效清零
+check('fatigue zero threshold any breath resets', fatRanges([[10, 10.5], [20.5, 21]], 20, 0, 40), []);
+
+// 45. 换气落在越界之前 / 之后：长换气有效恢复，恢复后未再越界
+check('fatigue reset then fine', fatRanges([[15, 25]], 20, 5, 40), []); // 0→15 仅15s；25→40 仅15s
+
+// 46. 重叠 / 半开相邻的换气合并为一次不发声：[10,12) 与 [12,15) 相邻合计 5s（恰为阈值 → 有效）
+check('fatigue adjacent breaths merge effective', fatRanges([[10, 12], [12, 15]], 20, 5, 40), [[35, 40, 25]]);
+// 合并后仍短于阈值：[10,12)+[12,14) 合计 4s < 5s，整体只是一次短换气，累计不清零
+//   唱 0→10(10)、14→40(26) 累计 36 → 越界 t=24；[40,45) 5s 有效恢复 → [24,40)
+check('fatigue adjacent breaths merge still short', fatRanges([[10, 12], [12, 14], [40, 45]], 20, 5), [[24, 40, 36]]);
+
+// 47. 越界后一直未恢复到曲终：第二段警示从恢复后累计满 20s 的 t=54 起延伸到 duration（不含）
+check('fatigue open until end', fatRanges([[30, 34]], 20, 2, 90).slice(1), [[54, 90, 56]]);
+
+// 48. 全曲汇总：示例工程的疲劳警示按开始时间排序，且 DOM id 与排序下标一致
+{
+  const p = createSampleProject();
+  const map = projectFatigue(p);
+  const alerts = fatigueAlerts(p, map);
+  const times = alerts.map((a) => [Math.round(a.start), Math.round(a.end), a.name]);
+  // 刘洋 [20,31)、陈静 [28,96)、刘洋 [54,96)、周杰 / 李雪 同在 [83,96)
+  // （同时刻按声部名排序，zh 排序下「男高音」排在「女低音」前）
+  check('sample fatigue alerts sorted', times, [
+    [20, 31, '刘洋'],
+    [28, 96, '陈静'],
+    [54, 96, '刘洋'],
+    [83, 96, '周杰'],
+    [83, 96, '李雪'],
+  ]);
+  const liu = alerts.filter((a) => a.name === '刘洋').length;
+  check('sample liu two alerts', liu, 2);
+  // 停用检查的歌手不进入结果
+  check('sample disabled singers clean', alerts.some((a) => a.name === '郑伟'), false);
+  // id 下标与全局排序一致（侧栏跳转目标）
+  const first = alerts[0];
+  check('fatigue dom id index', fatigueDomId(first.singerId, 0), `fatigue-${first.singerId}-0`);
+  // 启用但达标的王芳 / 赵敏无警示
+  check('sample enabled-but-ok singers', alerts.some((a) => a.name === '王芳' || a.name === '赵敏'), false);
+  // 峰值统计：刘洋第一段峰值 30、陈静峰值 96-3（短换气 3+4 暂停）= 89
+  const chen = alerts.find((a) => a.name === '陈静' && a.start === 28)!;
+  near('sample chen peak', chen.peakSinging, 89);
+}
+
+// 49. 设置规范化：负数 / NaN / Infinity / 非数字不得进入状态，统一回退 0；合法值吸附 0.1
+check('fatigue normalize defaults', normalizeSingerLimits(undefined), { maxSustainSec: 0, recoveryBreathSec: 0 });
+check('fatigue normalize rejects negative', normalizeSingerLimits({ maxSustainSec: -3, recoveryBreathSec: -0.1 }), {
+  maxSustainSec: 0,
+  recoveryBreathSec: 0,
+});
+check('fatigue normalize rejects non-finite', normalizeSingerLimits({ maxSustainSec: NaN, recoveryBreathSec: Infinity }), {
+  maxSustainSec: 0,
+  recoveryBreathSec: 0,
+});
+check('fatigue normalize round1', normalizeSingerLimits({ maxSustainSec: '12.34', recoveryBreathSec: 2.25 }), {
+  maxSustainSec: 12.3,
+  recoveryBreathSec: 2.3,
+});
+
+// 50. 旧工程导入：缺省字段补 0（停用）；非法负数 / 非有限值清洗为 0；合法设置保留并随导出往返
+{
+  const old = sanitizeProject({
+    name: 'old',
+    duration: 30,
+    beatMap: { beatsPerBar: 4, beatUnit: 4, startBpm: 120, changes: [] },
+    parts: [{ id: 'p1', name: 'P', color: '#000', minSingers: 1 }],
+    // 旧工程歌手完全没有疲劳字段
+    singers: [{ id: 's1', name: '旧歌手', partId: 'p1', breaths: [{ id: 'b1', start: 1, end: 2 }] }],
+  })!;
+  check('old project default limits', [old.singers[0].maxSustainSec, old.singers[0].recoveryBreathSec], [0, 0]);
+
+  const dirty = sanitizeProject({
+    name: 'dirty',
+    duration: 30,
+    parts: [{ id: 'p1', name: 'P', color: '#000', minSingers: 1 }],
+    singers: [
+      { id: 'ok', name: '合法', partId: 'p1', maxSustainSec: 18, recoveryBreathSec: 2.5, breaths: [] },
+      { id: 'bad', name: '非法', partId: 'p1', maxSustainSec: -10, recoveryBreathSec: NaN, breaths: [] },
+    ],
+  })!;
+  check('dirty limits kept valid', [dirty.singers[0].maxSustainSec, dirty.singers[0].recoveryBreathSec], [18, 2.5]);
+  check('dirty limits sanitized', [dirty.singers[1].maxSustainSec, dirty.singers[1].recoveryBreathSec], [0, 0]);
+  // 导出往返：JSON.stringify 保留字段（本地保存 / 导出走同一对象）
+  const roundtrip = sanitizeProject(JSON.parse(JSON.stringify(dirty)))!;
+  check('limits survive json roundtrip', roundtrip.singers.map((s) => [s.maxSustainSec, s.recoveryBreathSec]), [
+    [18, 2.5],
+    [0, 0],
+  ]);
+}
+
+// 51. 预览实时重算：拖拽 / 寻优 / 接力预览基于预览工程，取消即还原（以 applyMove / applyRelay 模拟）
+{
+  // 上限 20s：原工程 [30,34) 有效恢复 → [20,30) 与 [54,60)；
+  // 把唯一换气拖走后中间恢复消失 → 全曲只剩曲末恢复前的连续疲劳
+  const p = relayProject([[[30, 34]]], { duration: 60, limits: [[20, 2]] });
+  const base = fatigueAlerts(p, projectFatigue(p)).map((a) => [Math.round(a.start), Math.round(a.end)]);
+  check('fatigue base project', base, [[20, 30], [54, 60]]);
+  // 模拟拖拽：换气移到 [5,9)（仍有效）→ [9,60) 唱 51s → [29,60)
+  const moved = {
+    ...p,
+    singers: p.singers.map((s) => ({ ...s, breaths: s.breaths.map((b) => ({ ...b, start: 5, end: 9 })) })),
+  };
+  check('fatigue drag recomputes', fatigueAlerts(moved, projectFatigue(moved)).map((a) => [Math.round(a.start), Math.round(a.end)]), [
+    [29, 60],
+  ]);
+  // 接力预览：新增一段有效换气把长发声段切开
+  const relayPreview = applyRelay(p, {
+    ok: true,
+    partId: 'p1',
+    windowStart: 40,
+    windowEnd: 45,
+    assignments: [{ singerId: 's0', startBeat: 80, breathBeats: 10, start: 40, end: 45 }],
+  });
+  const previewAlerts = fatigueAlerts(relayPreview, projectFatigue(relayPreview)).map((a) => [
+    Math.round(a.start),
+    Math.round(a.end),
+  ]);
+  check('fatigue relay preview recomputes', previewAlerts, [[20, 30]]); // 34→40 仅6s、45→60 仅15s
+  // 取消预览：原工程结果不变
+  check('fatigue restored after cancel', fatigueAlerts(p, projectFatigue(p)).map((a) => [a.start, a.end]), [
+    [20, 30],
+    [54, 60],
+  ]);
+}
+
+// 52. 快照冻结 / 清洗保留疲劳设置（恢复后歌手设置与快照一致）
+{
+  const p = relayProject([[[10, 12]]], { duration: 40, limits: [[22, 3]] });
+  const snap = createSnapshot(p);
+  check('snapshot freezes limits', [snap.singers[0].maxSustainSec, snap.singers[0].recoveryBreathSec], [22, 3]);
+  const washed = sanitizeSnapshot(JSON.parse(JSON.stringify({
+    ...snap,
+    singers: [{ ...snap.singers[0], maxSustainSec: -1, recoveryBreathSec: 1 / 0 }],
+  })));
+  check('snapshot sanitize limits', washed ? [washed.singers[0].maxSustainSec, washed.singers[0].recoveryBreathSec] : null, [0, 0]);
+  const restored = restoreProjectSnapshot(relayProject([[]], { duration: 40 }), snap);
+  check('snapshot restore limits', [restored.singers[0].maxSustainSec, restored.singers[0].recoveryBreathSec], [22, 3]);
 }
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);

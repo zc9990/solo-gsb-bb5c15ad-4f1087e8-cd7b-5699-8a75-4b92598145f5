@@ -10,6 +10,7 @@ import {
 } from './lib/snapshot';
 import { normalizeBeatMap } from './lib/tempo';
 import { partUnder, totalSeconds, type Segment } from './lib/coverage';
+import { fatigueAlerts as computeFatigueAlerts, fatigueDomId, projectFatigue } from './lib/fatigue';
 import { applyMove, findBestMove, type OptimizeResult } from './lib/optimize';
 import { applyRelay, planRelay, type RelayRequest, type RelayResult, type RelaySuccess } from './lib/relay';
 import { MIN_DURATION, clamp } from './lib/constraints';
@@ -108,6 +109,14 @@ export default function App() {
     [coverage],
   );
   const underCount = useMemo(() => [...coverage.values()].reduce((acc, segs) => acc + segs.length, 0), [coverage]);
+
+  /**
+   * 持续发声疲劳同样基于 effectiveProject 实时计算：
+   * 拖拽 / 缩放直接改工程、寻优与接力预览改预览工程，警示层与侧栏汇总随之重算；
+   * 取消预览时 effectiveProject 回到原工程，警示立即还原。
+   */
+  const fatigue = useMemo(() => computeFatigueAlerts(effectiveProject, projectFatigue(effectiveProject)), [effectiveProject]);
+  const fatigueCount = fatigue.length;
 
   const ghost: Ghost | null = useMemo(() => {
     if (relay || !previewing || !result) return null;
@@ -212,6 +221,13 @@ export default function App() {
     setRelay(null);
   };
 
+  // ---------- 持续发声疲劳 ----------
+  /** 侧栏点击警示：横向滚到警示时刻（居中）、纵向滚到对应歌手行。 */
+  const jumpFatigue = useCallback((singerId: string, index: number) => {
+    const el = document.getElementById(fatigueDomId(singerId, index));
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+  }, []);
+
   // ---------- 导入 / 导出 ----------
   const exportJson = () => {
     const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
@@ -294,8 +310,10 @@ export default function App() {
         <Sidebar
           project={project}
           coverage={coverage}
+          fatigueAlerts={fatigue}
           mutate={mutate}
           mutateBeatMap={mutateBeatMap}
+          onJumpFatigue={jumpFatigue}
           snapshots={snapshots}
           onCreateSnapshot={handleCreateSnapshot}
           onRestoreSnapshot={handleRestoreSnapshot}
@@ -310,6 +328,9 @@ export default function App() {
               <span className="muted">
                 （{underCount} 处{previewing ? ' · 寻优预览中' : ''}
                 {relay ? ' · 接力预览中' : ''}）
+              </span>
+              <span className={`stat-sep ${fatigueCount > 0 ? 'fatigue-warn' : 'ok'}`}>
+                持续发声疲劳：<b>{fatigueCount}</b> 处
               </span>
             </div>
             <div className="zoom">
@@ -344,6 +365,7 @@ export default function App() {
           <Timeline
             project={project}
             coverage={coverage}
+            fatigueAlerts={fatigue}
             selection={selection}
             ghost={ghost}
             relayPreview={relayPreview}

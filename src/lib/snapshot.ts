@@ -1,5 +1,6 @@
 import type { BreathInterval, Project, RehearsalSnapshot, Singer, VoicePart } from '../types';
 import { uid } from './id';
+import { normalizeSingerLimits } from './fatigue';
 
 const EPS = 1e-6;
 const SNAPSHOTS_KEY = 'breath-relay:snapshots:v1';
@@ -205,7 +206,9 @@ export function sanitizeSnapshot(raw: unknown): RehearsalSnapshot | null {
           return { id: str(b.id, uid()), start, end };
         })
         .filter((x): x is BreathInterval => x !== null);
-      return { id: str(s.id, uid()), name: str(s.name, '歌手'), partId, breaths };
+      // 疲劳设置同样清洗：旧快照缺省时为 0（停用），非法负数 / 非有限值不得进入状态
+      const limits = normalizeSingerLimits(s);
+      return { id: str(s.id, uid()), name: str(s.name, '歌手'), partId, ...limits, breaths };
     })
     .filter((x): x is Singer => x !== null);
 

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Project, Selection } from '../types';
 import { totalSeconds, type Segment, type UnderSegment } from '../lib/coverage';
+import { fatigueDomId, type FatigueAlert } from '../lib/fatigue';
 import { placeNewInterval, placeNewIntervalOnBeat } from '../lib/constraints';
 import { beatTicks, fmtTimeAsBeat, snapTimeToBeat, timeToLocation } from '../lib/tempo';
 import { fmtSec, fmtTick } from '../lib/format';
@@ -26,6 +27,8 @@ interface Props {
   project: Project;
   /** 各声部未达标时段（预览时基于预览工程计算） */
   coverage: Map<string, UnderSegment[]>;
+  /** 持续发声疲劳警示（全局按开始时间排序；预览时基于预览工程实时重算；index 与侧栏跳转一致） */
+  fatigueAlerts: FatigueAlert[];
   selection: Selection | null;
   ghost: Ghost | null;
   /** 声部接力排程的整组幽灵块预览（null = 未在预览） */
@@ -217,6 +220,9 @@ export default function Timeline(props: Props) {
               const relayGhosts = props.relayPreview
                 ? props.relayPreview.ghosts.filter((g) => g.singerId === singer.id)
                 : [];
+              const fatigueSegs = props.fatigueAlerts
+                .map((a, index) => ({ a, index }))
+                .filter((x) => x.a.singerId === singer.id);
               return (
                 <div className="trow singer-row" key={singer.id}>
                   <div className="trow-label">{singer.name}</div>
@@ -242,6 +248,19 @@ export default function Timeline(props: Props) {
                         }}
                       />
                     )}
+                  {fatigueSegs.map(({ a, index }) => (
+                    <div
+                      key={fatigueDomId(singer.id, index)}
+                      id={fatigueDomId(singer.id, index)}
+                      className="fatigue-seg"
+                      style={{ left: a.start * pxPerSec, width: Math.max(2, (a.end - a.start) * pxPerSec) }}
+                      title={
+                        beatMode
+                          ? `持续发声疲劳 拍位 ${fmtTimeAsBeat(a.start, beatMap)} – ${fmtTimeAsBeat(a.end, beatMap)}\n${fmtSec(a.start)} – ${fmtSec(a.end)}（半开区间）\n累计连续发声 ${a.peakSinging.toFixed(1)}s，超过上限 ${a.maxSustainSec}s，直到下一次有效恢复开始`
+                          : `持续发声疲劳 ${fmtSec(a.start)} – ${fmtSec(a.end)}（半开区间）\n累计连续发声 ${a.peakSinging.toFixed(1)}s，超过上限 ${a.maxSustainSec}s，直到下一次有效恢复开始`
+                      }
+                    />
+                  ))}
                   {singer.breaths.map((b) => (
                     <BreathBlock
                       key={b.id}

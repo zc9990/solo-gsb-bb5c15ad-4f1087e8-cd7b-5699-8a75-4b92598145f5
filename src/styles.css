@@ -275,10 +275,122 @@ input[type='number'] {
   flex: 1;
 }
 
+.singer-item {
+  flex-direction: column;
+  align-items: stretch !important;
+  gap: 4px !important;
+  padding: 4px 2px;
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.1);
+}
+
+.singer-row1 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.singer-limits {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+  padding-left: 2px;
+}
+
+.singer-limits label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.singer-limits input {
+  width: 48px;
+  font-size: 11px;
+  padding: 2px 5px;
+}
+
+.singer-limits .breath-count {
+  margin-left: auto;
+}
+
+.fatigue-badge {
+  flex: none;
+  font-size: 10px;
+  color: #fde68a;
+  background: #78350f;
+  border: 1px solid #b45309;
+  border-radius: 999px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
 .breath-count {
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
+}
+
+/* ---------- 持续发声疲劳 ---------- */
+.fatigue-total {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #fbbf24;
+  font-weight: 500;
+}
+
+.fatigue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+button.fatigue-entry {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  background: var(--panel-2);
+  border-left: 3px solid #f59e0b;
+  text-align: left;
+}
+
+button.fatigue-entry:hover {
+  border-color: #fbbf24;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.fatigue-time {
+  font-size: 12px;
+  color: #fbbf24;
+  font-variant-numeric: tabular-nums;
+}
+
+.fatigue-who {
+  font-size: 12px;
+}
+
+.fatigue-peak {
+  font-size: 11px;
+}
+
+.stat-sep {
+  margin-left: 14px;
+  font-size: 13px;
+}
+
+.stat-sep b {
+  font-size: 15px;
+}
+
+.fatigue-warn {
+  color: #fbbf24;
 }
 
 .tips ul {
@@ -437,6 +549,25 @@ input[type='number'] {
   background: repeating-linear-gradient(45deg, #ef4444, #ef4444 6px, #b91c1c 6px, #b91c1c 12px);
   border-radius: 3px;
   box-shadow: 0 0 6px rgba(239, 68, 68, 0.7);
+}
+
+/* 持续发声疲劳：歌手轨道独立警示层（琥珀色，区别于覆盖行的红色） */
+.fatigue-seg {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 3px;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(245, 158, 11, 0.22),
+    rgba(245, 158, 11, 0.22) 6px,
+    rgba(180, 83, 9, 0.18) 6px,
+    rgba(180, 83, 9, 0.18) 12px
+  );
+  border-bottom: 2px solid #f59e0b;
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.45);
+  pointer-events: none;
+  z-index: 1;
 }
 
 .singer-row {

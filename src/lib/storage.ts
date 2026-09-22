@@ -1,6 +1,7 @@
 import type { BeatMap, Project } from '../types';
 import { uid } from './id';
 import { normalizeBeatMap } from './tempo';
+import { normalizeSingerLimits } from './fatigue';
 
 export { uid };
 
@@ -51,7 +52,9 @@ export function sanitizeProject(raw: unknown): Project | null {
           return { id: str(b.id, uid()), start, end };
         })
         .filter((x): x is NonNullable<typeof x> => x !== null);
-      return { id: str(o.id, uid()), name: str(o.name, '歌手'), partId, breaths };
+      // 旧工程缺少疲劳设置时默认 0（停用）；负数 / 非有限值一律回退 0，不进入状态
+      const limits = normalizeSingerLimits(o);
+      return { id: str(o.id, uid()), name: str(o.name, '歌手'), partId, ...limits, breaths };
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
 
